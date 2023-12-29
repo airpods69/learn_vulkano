@@ -1,38 +1,20 @@
 use std::sync::Arc;
 
-use vulkano::image::view::ImageViewCreateInfo;
-use vulkano::{VulkanLibrary, shader, pipeline, command_buffer};
+use vulkano::command_buffer::allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo};
+use vulkano::{VulkanLibrary, command_buffer};
 use vulkano::instance::{InstanceCreateInfo, Instance};
 use vulkano::device::{QueueFlags, Device, DeviceCreateInfo, QueueCreateInfo};
 use vulkano::memory::allocator::{StandardMemoryAllocator, AllocationCreateInfo, MemoryTypeFilter};
-use vulkano::buffer::{Buffer, BufferCreateInfo, BufferUsage, BufferContents};
-use vulkano::sync::{self, GpuFuture};
+use vulkano::buffer::{BufferContents, Buffer, BufferCreateInfo, BufferUsage};
+
+use vulkano::command_buffer::{ClearColorImageInfo, AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo};
 
 use vulkano::image::{Image, ImageType, ImageUsage, ImageCreateInfo};
-use vulkano::format::Format;
+use vulkano::format::{Format, ClearColorValue};
 
-use vulkano::pipeline::Pipeline;
-use vulkano::pipeline::compute::ComputePipelineCreateInfo;
-use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
-use vulkano::pipeline::{
-    ComputePipeline,
-    PipelineLayout,
-    PipelineBindPoint,
-    PipelineShaderStageCreateInfo
-};
+use vulkano::sync::{self, GpuFuture};
 
-use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-
-use vulkano::command_buffer::allocator::{
-    StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo
-};
-
-use vulkano::command_buffer::{
-    AutoCommandBufferBuilder,
-    CommandBufferUsage,
-    CopyBufferInfo
-};
+use image::{ImageBuffer, Rgba};
 
 
 #[derive(BufferContents)]
@@ -110,5 +92,62 @@ fn main() {
             memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
             ..Default::default()
         }
+        ).unwrap();
+
+    let command_buffer_allocator = StandardCommandBufferAllocator::new(
+        device.clone(),
+        StandardCommandBufferAllocatorCreateInfo::default(),
         );
+
+    let mut builder = AutoCommandBufferBuilder::primary(
+        &command_buffer_allocator, 
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit
+        ).unwrap();
+
+
+
+    let buf = Buffer::from_iter(
+        memory_allocator.clone(), 
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_RANDOM_ACCESS,
+                ..Default::default()
+        }, (0..1024 * 1024 * 4).map(|_| 0u8)
+        )
+        .expect("Failed to create buffer");
+
+    builder
+        .clear_color_image(ClearColorImageInfo {
+            clear_value: ClearColorValue::Float([0.0, 0.0, 1.0, 1.0]),
+            ..ClearColorImageInfo::image(image.clone())
+        })
+    .unwrap()
+    .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+                image.clone(), 
+                buf.clone()
+                ))
+    .unwrap();
+
+    let command_buffer = builder.build().unwrap();
+
+    let future = sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .unwrap()
+        .then_signal_fence_and_flush()
+        .unwrap();
+
+    future.wait(None).unwrap();
+
+    let buffer_content = buf.read().unwrap();
+    let image = ImageBuffer::<Rgba<u8>, _>::from_raw(1024, 1024, &buffer_content[..]).unwrap();
+
+    image.save("image.png").unwrap();
+
+    println!("Image saved at image.png");
+
 }
